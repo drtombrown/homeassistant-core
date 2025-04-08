@@ -3,66 +3,81 @@
 from __future__ import annotations
 
 import logging
+from pprint import pp
 from typing import Any
 
-# from pprint import pp
-import voluptuous as vol
-
 from homeassistant.components.light import (
-    PLATFORM_SCHEMA as LIGHT_PLATFORM_SCHEMA,
+    # PLATFORM_SCHEMA as LIGHT_PLATFORM_SCHEMA,
     ColorMode,
     LightEntity,
 )
-from homeassistant.const import CONF_NAME
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_CHANNEL_ID, CONF_ROOM_ID, CONF_SUPPORTED_COLOR_MODES, DOMAIN
-from .coordinator import RakoLightCoordinator
+from .coordinator import RakoLightCoordinator, RakoLightData
 
 _LOGGER = logging.getLogger(__name__)
 
 
-PLATFORM_SCHEMA = LIGHT_PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_NAME): cv.string,
-        vol.Required(CONF_ROOM_ID): cv.positive_int,
-        vol.Required(CONF_CHANNEL_ID): cv.positive_int,
-        vol.Required(CONF_SUPPORTED_COLOR_MODES): vol.All(
-            cv.ensure_list, [vol.In(ColorMode)]
-        ),
-    }
-)
+# async def async_setup_platform(
+#     hass: HomeAssistant,
+#     config: ConfigType,
+#     add_entities: AddEntitiesCallback,
+#     _discovery_info: DiscoveryInfoType | None = None,
+# ) -> None:
+#     """Set up the Rako Light platform."""
+
+#     coordinator = hass.data[DOMAIN]["coordinator"]
+
+#     add_entities([RakoLight(coordinator, config)])
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    add_entities: AddEntitiesCallback,
-    _discovery_info: DiscoveryInfoType | None = None,
+    config_entry: ConfigEntry[RakoLightCoordinator],
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the Rako Light platform."""
+    """Set up the Rako Light platform from a config entry."""
 
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    pp("Rako Light :: async_setup_entry")
 
-    add_entities([RakoLight(coordinator, config)])
+    coordinator = config_entry.runtime_data
+    # pp(coordinator)
+
+    rako_hub_lights = await coordinator.discover_lights()
+    # pp(rako_hub_lights)
+
+    entities_to_add = [
+        RakoLight(coordinator=coordinator, light_data=rako_hub_light)
+        for rako_hub_light in rako_hub_lights
+    ]
+
+    async_add_entities(entities_to_add)
 
 
 class RakoLight(CoordinatorEntity[RakoLightCoordinator], LightEntity):
     """Representation of an Rako Light."""
 
-    def __init__(self, coordinator: RakoLightCoordinator, config: ConfigType) -> None:
+    def __init__(
+        self, coordinator: RakoLightCoordinator, light_data: RakoLightData
+    ) -> None:
         """Initialize a RakoLight."""
 
-        super().__init__(coordinator)
+        self._unique_id = f"rako_light__room_id:{light_data.room_id}_channel_id:{light_data.channel_id}"
 
-        self._name = config[CONF_NAME]
-        self._room_id = config[CONF_ROOM_ID]
-        self._channel_id = config[CONF_CHANNEL_ID]
-        self._supported_color_modes = config[CONF_SUPPORTED_COLOR_MODES]
+        super().__init__(coordinator, context=self._unique_id)
+
+        # pp("light.py __init__")
+        # pp(light_data)
+
+        self._name = light_data.name
+        self._room_id = light_data.room_id
+        self._channel_id = light_data.channel_id
+        self._color_mode = (
+            ColorMode.BRIGHTNESS if light_data.type == "SLIDER" else ColorMode.ONOFF
+        )
 
     @property
     def name(self) -> str:
@@ -85,6 +100,12 @@ class RakoLight(CoordinatorEntity[RakoLightCoordinator], LightEntity):
 
         return self.coordinator.get_level(self._room_id, self._channel_id) > 0
 
+    @property
+    def unique_id(self):
+        """Return a unique ID for this light."""
+
+        return self._unique_id
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Instruct the light to turn on.
 
@@ -92,19 +113,34 @@ class RakoLight(CoordinatorEntity[RakoLightCoordinator], LightEntity):
         brightness control.
         """
 
-        await self.coordinator.turn_light_on(self._room_id, self._channel_id)
+        brightness = kwargs.get("brightness", 255)
+
+        pp(
+            f"RakoLight::async_turn_on: {self._room_id=}, {self._channel_id=}, {brightness=}"
+        )
+
+        await self.coordinator.set_light_level(
+            self._room_id, self._channel_id, brightness
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Instruct the light to turn off."""
 
-        await self.coordinator.turn_light_off(self._room_id, self._channel_id)
+        pp(f"RakoLight::async_turn_on: {self._room_id=}, {self._channel_id=}")
 
-    @property
-    def supported_color_modes(self) -> set[ColorMode] | set[str] | None:
-        """Declare which color modes this light supports."""
-        return self._supported_color_modes
+        await self.coordinator.set_light_level(self._room_id, self._channel_id, 0)
 
     @property
     def color_mode(self) -> ColorMode | str | None:
         """Return the current color mode."""
-        return self._supported_color_modes[0]
+        return self._color_mode
+
+    @property
+    def supported_color_modes(self) -> set[ColorMode] | set[str] | None:
+        """Declare which color modes this light supports."""
+        return {self._color_mode}
+
+    @property
+    def should_poll(self) -> bool:
+        """Fetch data via coordinator."""
+        return False

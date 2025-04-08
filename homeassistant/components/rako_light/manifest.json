@@ -2,6 +2,7 @@
   "domain": "rako_light",
   "name": "Rako Light",
   "codeowners": ["@DrTomBrown"],
+  "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/rako_light",
   "integration_type": "hub",
   "iot_class": "local_polling",

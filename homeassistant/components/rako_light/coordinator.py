@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 import logging
 
-from rakopy.hub import Hub
-
 # from pprint import pp
+from rakopy.hub import Hub
+from rakopy.model import HubStatus
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -27,6 +30,17 @@ class RakoLightDataLevel:
 
 @dataclass
 class RakoLightData:
+    """Data class for Rako Light."""
+
+    room_id: int
+    channel_id: int
+    name: str
+    room_name: str
+    type: str
+
+
+@dataclass
+class RakoHubLightLevelsData:
     """Data class for Rako Light data."""
 
     levels: list[RakoLightDataLevel]
@@ -35,15 +49,24 @@ class RakoLightData:
         """Find a level by channel id and room_id."""
 
         for level in self.levels:
+            # pp(
+            #     f"find_level: {room_id=}, {channel_id=}, {level.room_id=}, {level.channel_id=}"
+            # )
             if level.channel_id == channel_id and level.room_id == room_id:
                 return level
+
         return None
 
 
-class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
+type RakoLightConfigEntry = ConfigEntry[RakoLightCoordinator]
+
+
+class RakoLightCoordinator(DataUpdateCoordinator[RakoHubLightLevelsData]):
     """Rako Light Date Update coordinator."""
 
-    def __init__(self, hass: HomeAssistant, host: str) -> None:
+    config_entry: RakoLightConfigEntry
+
+    def __init__(self, hass: HomeAssistant, config_entry: RakoLightConfigEntry) -> None:
         """Initialize the coordinator."""
 
         super().__init__(
@@ -52,14 +75,14 @@ class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
             # Name - for logging purposes.
             name="Rako Hub",
             # Polling interval. Will only be polled if there are subscribers.
-            update_interval=timedelta(seconds=60),
+            update_interval=timedelta(seconds=10),
             # Set always_update to `False` if the data returned from the
             # api can be compared via `__eq__` to avoid duplicate updates
             # being dispatched to listeners
             always_update=True,
         )
 
-        self._hub = Hub(CLIENT_NAME, host)
+        self._hub = Hub(CLIENT_NAME, config_entry.data[CONF_HOST])
 
     async def _async_setup(self):
         """Set up the coordinator.
@@ -73,7 +96,23 @@ class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
 
         # pp("_async_setup")
 
-    async def _async_update_data(self) -> RakoLightData:
+    async def discover_lights(self) -> list[RakoLightData]:
+        """Discover lights associated with Rako Hub."""
+
+        rako_rooms = await self._hub.get_rooms()
+        return [
+            RakoLightData(
+                room_id=room.id,
+                channel_id=channel.id,
+                name=channel.title,
+                room_name=room.title,
+                type=channel.type,
+            )
+            for room in rako_rooms
+            for channel in room.channels
+        ]
+
+    async def _async_update_data(self) -> RakoHubLightLevelsData:
         """Fetch data from API endpoint.
 
         This is the place to pre-process the data to lookup tables
@@ -85,7 +124,7 @@ class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
         try:
             hubLevels = await self._hub.get_levels()
 
-            data = RakoLightData(
+            data = RakoHubLightLevelsData(
                 levels=[
                     RakoLightDataLevel(
                         channel_id=channel.channel_id,
@@ -111,6 +150,11 @@ class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
     # These will be specific to your api or yo may not need them at all
     # ----------------------------------------------------------------------------
 
+    async def get_hub_status(self) -> HubStatus:
+        """Get hub info."""
+
+        return await self._hub.get_hub_status()
+
     def get_level(self, room_id: int, channel_id: int) -> int:
         """Get the level, given a specific room and channel."""
 
@@ -125,18 +169,12 @@ class RakoLightCoordinator(DataUpdateCoordinator[RakoLightData]):
 
         return level.current_level
 
-    async def turn_light_on(self, room_id: int, channel_id: int) -> None:
-        """Turn on a light."""
-        await self._hub.set_level(room_id, channel_id, 255)
-        # update level to 255 in data class?
+    async def set_light_level(
+        self, room_id: int, channel_id: int, brightness: int
+    ) -> None:
+        """Set the light brightness (level)."""
 
-    async def turn_light_off(self, room_id: int, channel_id: int) -> None:
-        """Turn off a light."""
-        await self._hub.set_level(room_id, channel_id, 0)
-        # update level to 0 in data class?
-
-    async def set_light_level(self, room_id: int, channel_id: int, level: int) -> None:
-        """Set the light level."""
-
-        await self._hub.set_level(room_id, channel_id, level)
+        await self._hub.set_level(room_id, channel_id, brightness)
         # update level in data class?
+
+        await self.async_request_refresh()
